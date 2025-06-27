@@ -15,14 +15,15 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 from pathlib import Path
+import yaml
 
 # ── 모델 로딩
 ROOT = Path(__file__).parent / "models" / "food"
 model = YOLO(str(ROOT / "best.pt"))
 model.to("cuda:0" if torch.cuda.is_available() else "cpu").eval()
 
-with open(ROOT / "data.yaml") as f:
-    names = YOLO.load_yaml(f)["names"]
+with open(ROOT / "data.yaml", encoding="utf-8") as f:
+    names = yaml.safe_load(f)["names"]
 
 router = APIRouter(prefix="/food", tags=["food"])
 
