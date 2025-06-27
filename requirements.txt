@@ -1,0 +1,5 @@
+ultralytics
+torch
+fastapi
+pillow
+uvicorn
