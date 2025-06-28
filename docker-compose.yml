@@ -3,7 +3,7 @@ version: '3.9'
 services:
   fastapi:
     build: .
-    container_name: fastapi-app
+    container_name: picmealapp_ai_model_app
     ports:
-      - "8000:8000"
+      - "5000:5000"  # host:container
     restart: always
