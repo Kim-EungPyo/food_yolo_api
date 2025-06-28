@@ -8,39 +8,112 @@ Original file is located at
 """
 
 # router_food.py
-import io
+import os
+from pathlib import Path
+from io import BytesIO
+
+import cv2
+import numpy as np
+import torch
+import yaml
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from ultralytics import YOLO
-from PIL import Image
-import torch
-from pathlib import Path
-import yaml
 
-# ── 모델 로딩
-ROOT = Path(__file__).parent / "models" / "food"
-model = YOLO(str(ROOT / "best.pt"))
-model.to("cuda:0" if torch.cuda.is_available() else "cpu").eval()
+router = APIRouter()
 
-with open(ROOT / "data.yaml", encoding="utf-8") as f:
-    names = yaml.safe_load(f)["names"]
+# ─────────────────────── 기본 설정 ─────────────────────── #
+CONF_TH   = 0.80          # confidence 하한 (너무 높으면 박스가 0개일 수 있음)
+IOU_THR   = 0.30          # box 합의용 IoU
+DEVICE    = "cuda" if torch.cuda.is_available() else "cpu"
 
-router = APIRouter(prefix="/food", tags=["food"])
+ROOT      = Path(__file__).parent        # 현재 파일 기준 루트
+MODEL_DIR = ROOT / "models"              # ./models
+DATA_YAML = MODEL_DIR / "data.yaml"
 
+# ─────────────────────── 모델 로드 ─────────────────────── #
+model_paths = sorted(MODEL_DIR.glob("*.pt"))
+if not model_paths:
+    raise RuntimeError(f"❌ models 폴더에 .pt 파일이 없습니다 → {MODEL_DIR}")
+
+models = [YOLO(str(p)).to(DEVICE) for p in model_paths]
+
+# ─────────────────────── 클래스 이름 로드 ───────────────── #
+try:
+    with open(DATA_YAML, encoding="utf-8") as f:
+        names = yaml.safe_load(f)["names"]
+except FileNotFoundError:
+    raise RuntimeError(f"❌ data.yaml 을 찾을 수 없습니다 → {DATA_YAML}")
+
+# ─────────────────────── IoU 계산 함수 ─────────────────── #
+def box_iou(box1, box2):
+    area1 = (box1[:, 2] - box1[:, 0]) * (box1[:, 3] - box1[:, 1])
+    area2 = (box2[:, 2] - box2[:, 0]) * (box2[:, 3] - box2[:, 1])
+    lt = torch.max(box1[:, None, :2], box2[:, :2])
+    rb = torch.min(box1[:, None, 2:], box2[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, :, 0] * wh[:, :, 1]
+    union = area1[:, None] + area2 - inter
+    return inter / union
+
+# ─────────────────────── 합의(Consensus) ───────────────── #
+@torch.no_grad()
+def consensus_boxes(img_bgr: np.ndarray,
+                    conf_th: float = CONF_TH,
+                    iou_thr: float = IOU_THR):
+    """여러 모델 예측(box)을 합쳐 대표 박스 리스트 반환"""
+    boxes, confs, clss, mids = [], [], [], []
+
+    for mid, mdl in enumerate(models):
+        preds = mdl.predict(img_bgr, conf=conf_th, verbose=False, device=DEVICE)
+        if not preds or preds[0].boxes is None or len(preds[0].boxes) == 0:
+            continue
+        r = preds[0]
+        n = len(r.boxes)
+        boxes.append(r.boxes.xyxy.cpu())
+        confs.append(r.boxes.conf.cpu())
+        clss.append(r.boxes.cls.cpu().int())
+        mids.append(torch.full((n,), mid))
+
+    if not boxes:          # 모든 모델이 박스를 못 찾은 경우
+        return []
+
+    boxes = torch.cat(boxes)
+    confs = torch.cat(confs)
+    clss  = torch.cat(clss)
+    mids  = torch.cat(mids)
+
+    order = torch.argsort(confs, descending=True)
+    boxes, confs, clss, mids = boxes[order], confs[order], clss[order], mids[order]
+
+    kept = []
+    for i in range(len(boxes)):
+        if any(box_iou(boxes[i][None], boxes[j][None]).item() >= iou_thr for j in kept):
+            continue
+        kept.append(i)
+
+    reps = [{
+        "bbox":   boxes[i].tolist(),
+        "conf":   float(confs[i]),
+        "cls_id": int(clss[i]),
+        "label":  names[int(clss[i])],
+        "model":  int(mids[i])
+    } for i in kept]
+    return reps
+
+# ─────────────────────── API 엔드포인트 ────────────────── #
 @router.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict_food(file: UploadFile = File(...)):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=415, detail="이미지 파일만 지원합니다.")
-    img = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    result = model.predict(img, conf=0.10, iou=0.5, verbose=False)[0]
 
-    output = []
-    for xyxy, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
-        output.append({
-            "bbox": [round(x.item(), 2) for x in xyxy],
-            "conf": round(conf.item(), 4),
-            "id": int(cls),
-            "name": names[int(cls)]
-        })
+    # 업로드 파일 → BGR ndarray
+    raw = await file.read()
+    img_np = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img_np is None:
+        raise HTTPException(status_code=400, detail="이미지를 디코딩하지 못했습니다.")
 
-    return JSONResponse({"n": len(output), "detections": output})
+    # 합의 박스 추출
+    reps = consensus_boxes(img_np)
+
+    return JSONResponse(content={"n": len(reps), "detections": reps})

@@ -4,3 +4,6 @@ fastapi
 pillow
 uvicorn
 python-multipart
+opencv-python
+pyyaml
+tqdm
