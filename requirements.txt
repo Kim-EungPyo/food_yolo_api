@@ -1,9 +1,10 @@
 ultralytics
 torch
 fastapi
-pillow
 uvicorn
 python-multipart
-opencv-python
+opencv-python-headless
+pillow
 pyyaml
 tqdm
+numpy
