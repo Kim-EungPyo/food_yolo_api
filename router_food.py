@@ -13,7 +13,7 @@ router = APIRouter()
 # ── 경로/하이퍼파라미터 ──────────────────────────────────────
 ROOT      = Path(__file__).parent
 MODEL_DIR = ROOT / "model"                     # ← 폴더명 'model'
-WEIGHTS   = Path(os.getenv("YOLO_WEIGHTS", MODEL_DIR / "single_model.pt"))
+WEIGHTS   = Path(os.getenv("YOLO_WEIGHTS", MODEL_DIR / "single_model_final.pt"))
 DATA_YAML = MODEL_DIR / "data_100.yaml"
 
 IMG_SZ  = int(os.getenv("YOLO_IMG",  "640"))
