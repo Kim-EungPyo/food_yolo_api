@@ -8,3 +8,4 @@ pillow
 pyyaml
 tqdm
 numpy
+pillow-heif
